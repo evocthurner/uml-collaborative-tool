@@ -1167,30 +1167,49 @@ function exportPNG() {
   const serializer = new XMLSerializer();
   const svgData = serializer.serializeToString(svg);
 
-  const img = new Image();
   const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);
 
+  const img = new Image();
   img.onload = function () {
+    const scale = window.devicePixelRatio || 2;
+    const width = svg.clientWidth;
+    const height = svg.clientHeight;
+
     const canvas = document.createElement("canvas");
-    canvas.width = img.width * 2;
-    canvas.height = img.height * 2;
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    canvas.style.width = width + "px";
+    canvas.style.height = height + "px";
+
     const ctx = canvas.getContext("2d");
-    ctx.scale(2, 2);
-    ctx.drawImage(img, 0, 0);
+    ctx.scale(scale, scale);
+
+    // Sfondo coerente con il tema dark
+    ctx.fillStyle = "#050509";
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.drawImage(img, 0, 0, width, height);
 
     canvas.toBlob((blob) => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = "diagram.png";
       a.click();
+      URL.revokeObjectURL(a.href);
     });
 
     URL.revokeObjectURL(url);
   };
 
+  img.onerror = function () {
+    alert("Errore nel rendering PNG. Controlla il contenuto SVG.");
+    URL.revokeObjectURL(url);
+  };
+
   img.src = url;
 }
+
 
 /* -------------------------------------------------------
    HIT TEST
