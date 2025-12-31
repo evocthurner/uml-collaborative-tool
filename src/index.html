@@ -6,8 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="style.css" />
 </head>
+
 <body>
   <div id="app">
+
     <!-- HEADER -->
     <header class="app-header glass">
       <div class="header-left">
@@ -25,12 +27,14 @@
           </div>
         </div>
       </div>
+
       <div class="header-center">
         <button class="btn ghost" id="newDiagramBtn">New Diagram</button>
         <button class="btn ghost" id="recentWorkspacesBtn">Recent</button>
         <button class="btn ghost" id="reviewModeToggle">Review Mode</button>
         <button class="btn ghost" id="quickSearchBtn">Search (Ctrl+F)</button>
       </div>
+
       <div class="header-right">
         <button class="btn" id="exportSnapshotBtn">Export JSON (Ctrl+S)</button>
         <button class="btn" id="importSnapshotBtn">Import JSON</button>
@@ -40,21 +44,26 @@
       </div>
     </header>
 
+    <!-- MAIN LAYOUT -->
     <main class="app-main">
-      <!-- PALETTE / LEFT SIDEBAR -->
+
+      <!-- LEFT SIDEBAR -->
       <aside class="sidebar-left glass">
         <h2 class="sidebar-title">Palette</h2>
+
         <div class="tool-group">
           <div class="tool-group-title">Tools</div>
           <button class="tool-btn active" data-tool="select">Select / Move</button>
           <button class="tool-btn" data-tool="pan">Pan</button>
           <button class="tool-btn" data-tool="zoom">Zoom</button>
         </div>
+
         <div class="tool-group">
           <div class="tool-group-title">Elements</div>
           <button class="tool-btn" data-tool="add-class">Add Class</button>
           <button class="tool-btn" data-tool="add-interface">Add Interface</button>
         </div>
+
         <div class="tool-group">
           <div class="tool-group-title">Connections</div>
           <button class="tool-btn" data-tool="assoc">Association</button>
@@ -62,9 +71,11 @@
           <button class="tool-btn" data-tool="realization">Realization</button>
           <button class="tool-btn" data-tool="dependency">Dependency</button>
         </div>
+
         <div class="tool-group">
           <div class="tool-group-title">Review</div>
           <button class="tool-btn" data-tool="add-comment">Add Comment</button>
+
           <div class="filter-row">
             <label class="label-small">Severity</label>
             <select id="reviewSeverityFilter" class="input small">
@@ -75,6 +86,7 @@
             </select>
           </div>
         </div>
+
         <div class="tool-group">
           <div class="tool-group-title">Zoom</div>
           <input type="range" id="zoomSlider" min="30" max="200" value="100" />
@@ -82,7 +94,7 @@
         </div>
       </aside>
 
-      <!-- CANVAS CENTER -->
+      <!-- CANVAS -->
       <section class="canvas-wrapper">
         <div class="canvas-inner glass">
           <svg id="diagramCanvas" class="diagram-canvas">
@@ -91,7 +103,9 @@
                 <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
               </pattern>
             </defs>
+
             <rect x="0" y="0" width="4000" height="4000" fill="url(#gridPattern)" />
+
             <g id="connectionsLayer"></g>
             <g id="elementsLayer"></g>
             <g id="commentsLayer"></g>
@@ -99,8 +113,9 @@
         </div>
       </section>
 
-      <!-- INSPECTOR / RIGHT SIDEBAR -->
+      <!-- RIGHT SIDEBAR -->
       <aside class="sidebar-right glass">
+
         <div class="inspector-section">
           <h2 class="sidebar-title">Inspector</h2>
           <div id="inspectorContent" class="inspector-content empty">
@@ -122,17 +137,20 @@
           </form>
           <ul id="decisionLog" class="decision-log"></ul>
         </div>
+
       </aside>
     </main>
 
     <!-- BOTTOM PANELS -->
     <section class="bottom-panels">
+
       <div class="panel glass">
         <div class="panel-header">
           <h3>Activity Log</h3>
         </div>
         <ul id="activityLog" class="log-list"></ul>
       </div>
+
       <div class="panel glass">
         <div class="panel-header">
           <h3>Diff & Merge</h3>
@@ -143,22 +161,27 @@
         </div>
         <ul id="diffList" class="log-list"></ul>
       </div>
+
       <div class="panel glass">
         <div class="panel-header">
           <h3>Workspace</h3>
         </div>
+
         <div class="workspace-box">
           <div class="workspace-row">
             <label class="label-small">Workspace name</label>
             <input type="text" id="workspaceNameInput" class="input small" />
           </div>
+
           <div class="workspace-row">
             <label class="label-small">Recent workspaces</label>
             <ul id="recentWorkspacesList" class="recent-list"></ul>
           </div>
         </div>
       </div>
+
     </section>
+
   </div>
 
   <!-- MODAL -->

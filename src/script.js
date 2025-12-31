@@ -1,24 +1,29 @@
 /**
- * UML Syncboard
+ * UML Syncboard – Script principale
+ * Include:
+ * - Editor UML Class Diagram
+ * - Commenti, Review Mode
+ * - Snapshot JSON import/export
+ * - Diff & Merge
+ * - PlantUML export
+ * - SVG/PNG export
+ * - Undo/Redo
+ * - Autosave + Recent Workspaces
+ * - Pan/Zoom + Drag/Drop
  *
- * Estensioni future per Sequence/State più avanzati:
- * - Sequence: aggiungere Actor, Lifeline con attivazioni e messaggi con linee tratteggiate, numerazione passi,
- *   layout verticale automatico e swimlane per lifeline.
- * - State: introdurre regioni, entry/exit/do actions, transizioni con eventi/guard/azione e visualizzazione gerarchica.
- * - Entrambi: riutilizzare il modello Diagram/Elements/Connections, aggiungere renderer specifici e controlli nella palette.
+ * Estensioni future:
+ * - Sequence Diagram: Actor, Lifeline, Message con layout verticale
+ * - State Machine: Stati, transizioni, entry/exit/do actions
  */
 
 /* -------------------------------------------------------
-   CORE STATE
+   STATO PRINCIPALE
 ------------------------------------------------------- */
 
 const workspaceState = {
   workspaceName: "Default workspace",
   currentDiagram: null,
-  importedSnapshot: null, // per diff/merge
-  activityLog: [],
-  decisionLog: [],
-  comments: [], // separato ma referenziato da diagram.comments
+  importedSnapshot: null,
   reviewMode: false,
   reviewSeverity: "all",
   undoStack: [],
@@ -26,12 +31,23 @@ const workspaceState = {
   maxHistory: 50,
 };
 
+let currentTool = "select";
+let selectedElementId = null;
+let selectedConnectionId = null;
+let connectionDraft = null;
+
+let dragState = null;
+let panState = { active: false, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+let zoom = 1;
+let spacePressed = false;
+
+/* SVG references */
 const svg = document.getElementById("diagramCanvas");
 const elementsLayer = document.getElementById("elementsLayer");
 const connectionsLayer = document.getElementById("connectionsLayer");
 const commentsLayer = document.getElementById("commentsLayer");
 
-/* UI refs */
+/* UI references */
 const inspectorContent = document.getElementById("inspectorContent");
 const commentsListEl = document.getElementById("commentsList");
 const activityLogEl = document.getElementById("activityLog");
@@ -47,24 +63,15 @@ const zoomValue = document.getElementById("zoomValue");
 const reviewModeToggle = document.getElementById("reviewModeToggle");
 const reviewSeverityFilter = document.getElementById("reviewSeverityFilter");
 
-/* Modale */
+/* Modal */
 const modalOverlay = document.getElementById("modalOverlay");
 const modalTitleEl = document.getElementById("modalTitle");
 const modalBodyEl = document.getElementById("modalBody");
 const modalFooterEl = document.getElementById("modalFooter");
 const modalCloseBtn = document.getElementById("modalCloseBtn");
 
-/* Tools */
-let currentTool = "select";
-let selectedElementId = null;
-let selectedConnectionId = null;
-let connectionDraft = null; // { type, fromId }
-let dragState = null; // { id, startX, startY, origX, origY }
-let panState = { active: false, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
-let zoom = 1;
-
 /* -------------------------------------------------------
-   MODEL HELPERS
+   UTILS
 ------------------------------------------------------- */
 
 function uid() {
@@ -74,6 +81,10 @@ function uid() {
 function nowIso() {
   return new Date().toISOString();
 }
+
+/* -------------------------------------------------------
+   DIAGRAMMA DEMO
+------------------------------------------------------- */
 
 function createEmptyDiagram() {
   return {
@@ -91,7 +102,6 @@ function createEmptyDiagram() {
   };
 }
 
-/* Demo dataset: 6 classi, 8 relazioni, 4 commenti */
 function createDemoDiagram() {
   const d = createEmptyDiagram();
   d.name = "Demo: Order Management";
@@ -171,7 +181,6 @@ function createDemoDiagram() {
       kind: "interface",
     },
   ];
-
   d.elements = classes.map((c) => ({
     id: c.id,
     x: c.x,
@@ -267,7 +276,7 @@ function createDemoDiagram() {
       targetElementId: "c_order",
       targetConnectionId: null,
       author: "Massimiliano",
-      text: "Order.getTotal() should probably return a value object instead of number.",
+      text: "Order.getTotal() should return a value object.",
       severity: "info",
       status: "open",
       createdAt: nowIso(),
@@ -277,7 +286,7 @@ function createDemoDiagram() {
       targetElementId: "c_payment",
       targetConnectionId: null,
       author: "Reviewer A",
-      text: "PaymentStatus enum missing 'REFUNDED'?",
+      text: "PaymentStatus missing 'REFUNDED'?",
       severity: "warn",
       status: "open",
       createdAt: nowIso(),
@@ -287,7 +296,7 @@ function createDemoDiagram() {
       targetElementId: null,
       targetConnectionId: "rel_repo_realization",
       author: "Reviewer B",
-      text: "Is this actually a realization or just a dependency?",
+      text: "Is this a realization or a dependency?",
       severity: "blocker",
       status: "open",
       createdAt: nowIso(),
@@ -297,7 +306,7 @@ function createDemoDiagram() {
       targetElementId: "c_customer",
       targetConnectionId: null,
       author: "Reviewer C",
-      text: "Consider adding phoneNumber for contact.",
+      text: "Consider adding phoneNumber.",
       severity: "info",
       status: "resolved",
       createdAt: nowIso(),
@@ -353,16 +362,13 @@ function redo() {
 }
 
 /* -------------------------------------------------------
-   STORAGE & WORKSPACES
+   AUTOSAVE + WORKSPACES
 ------------------------------------------------------- */
 
 function autosave() {
   if (!workspaceState.currentDiagram) return;
   const key = `umlSyncboard:${workspaceState.workspaceName}`;
-  localStorage.setItem(
-    key,
-    JSON.stringify(workspaceState.currentDiagram)
-  );
+  localStorage.setItem(key, JSON.stringify(workspaceState.currentDiagram));
   updateRecentWorkspaces(workspaceState.workspaceName);
 }
 
@@ -405,7 +411,7 @@ function renderRecentWorkspaces(list) {
 }
 
 /* -------------------------------------------------------
-   RENDERING
+   RENDER PRINCIPALE
 ------------------------------------------------------- */
 
 function render() {
@@ -425,100 +431,80 @@ function render() {
   renderDiffList();
   autosave();
 }
+/* -------------------------------------------------------
+   RENDER ELEMENTI
+------------------------------------------------------- */
 
 function renderElements() {
   elementsLayer.innerHTML = "";
   const d = workspaceState.currentDiagram;
-  const filter = workspaceState.reviewMode;
 
   d.elements.forEach((el) => {
-    if (filter && !elementHasOpenComment(el.id)) return;
+    if (workspaceState.reviewMode && !elementHasOpenComment(el.id)) return;
 
-    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    group.classList.add("uml-class");
-    if (selectedElementId === el.id) group.classList.add("selected");
-    group.setAttribute("data-id", el.id);
-    group.setAttribute(
-      "transform",
-      `translate(${el.x}, ${el.y})`
-    );
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.classList.add("uml-class");
+    if (selectedElementId === el.id) g.classList.add("selected");
+    g.setAttribute("data-id", el.id);
+    g.setAttribute("transform", `translate(${el.x}, ${el.y})`);
 
     const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     rect.setAttribute("width", el.w);
     rect.setAttribute("height", el.h);
-    group.appendChild(rect);
+    g.appendChild(rect);
 
-    const nameBg = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "rect"
-    );
+    const nameBg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     nameBg.setAttribute("width", el.w);
     nameBg.setAttribute("height", 24);
     nameBg.setAttribute("class", "class-name-bg");
-    group.appendChild(nameBg);
+    g.appendChild(nameBg);
 
-    const nameText = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "text"
-    );
+    const nameText = document.createElementNS("http://www.w3.org/2000/svg", "text");
     nameText.setAttribute("x", 6);
     nameText.setAttribute("y", 16);
-    nameText.textContent =
-      (el.stereotype ? el.stereotype + " " : "") + el.name;
-    nameText.setAttribute("data-role", "name");
-    group.appendChild(nameText);
+    nameText.textContent = (el.stereotype ? el.stereotype + " " : "") + el.name;
+    g.appendChild(nameText);
 
-    const attrsText = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "text"
-    );
+    const attrsText = document.createElementNS("http://www.w3.org/2000/svg", "text");
     attrsText.setAttribute("x", 6);
     attrsText.setAttribute("y", 38);
-    attrsText.innerHTML = "";
     let offset = 0;
     (el.attributes || []).forEach((line) => {
-      const tspan = document.createElementNS(
-        "http://www.w3.org/2000/svg",
-        "tspan"
-      );
-      tspan.setAttribute("x", 6);
-      tspan.setAttribute("dy", offset === 0 ? 0 : 13);
-      tspan.textContent = line;
-      attrsText.appendChild(tspan);
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      t.setAttribute("x", 6);
+      t.setAttribute("dy", offset === 0 ? 0 : 13);
+      t.textContent = line;
+      attrsText.appendChild(t);
       offset++;
     });
-    group.appendChild(attrsText);
+    g.appendChild(attrsText);
 
-    const methodsText = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "text"
-    );
+    const methodsText = document.createElementNS("http://www.w3.org/2000/svg", "text");
     methodsText.setAttribute("x", 6);
     methodsText.setAttribute("y", 38 + (el.attributes || []).length * 13 + 12);
     offset = 0;
     (el.methods || []).forEach((line) => {
-      const tspan = document.createElementNS(
-        "http://www.w3.org/2000/svg",
-        "tspan"
-      );
-      tspan.setAttribute("x", 6);
-      tspan.setAttribute("dy", offset === 0 ? 0 : 13);
-      tspan.textContent = line;
-      methodsText.appendChild(tspan);
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      t.setAttribute("x", 6);
+      t.setAttribute("dy", offset === 0 ? 0 : 13);
+      t.textContent = line;
+      methodsText.appendChild(t);
       offset++;
     });
-    group.appendChild(methodsText);
+    g.appendChild(methodsText);
 
-    elementsLayer.appendChild(group);
+    elementsLayer.appendChild(g);
   });
 }
 
 function elementHasOpenComment(id) {
   const d = workspaceState.currentDiagram;
-  return d.comments.some(
-    (c) => c.targetElementId === id && c.status === "open"
-  );
+  return d.comments.some((c) => c.targetElementId === id && c.status === "open");
 }
+
+/* -------------------------------------------------------
+   RENDER CONNESSIONI
+------------------------------------------------------- */
 
 function renderConnections() {
   connectionsLayer.innerHTML = "";
@@ -529,43 +515,41 @@ function renderConnections() {
     const to = d.elements.find((e) => e.id === c.toId);
     if (!from || !to) return;
 
-    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    group.classList.add("uml-connection");
-    if (c.type === "dependency") group.classList.add("dependency");
-    if (selectedConnectionId === c.id) group.classList.add("selected");
-    group.setAttribute("data-id", c.id);
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.classList.add("uml-connection");
+    if (c.type === "dependency") g.classList.add("dependency");
+    if (selectedConnectionId === c.id) g.classList.add("selected");
+    g.setAttribute("data-id", c.id);
 
-    const fromX = from.x + from.w / 2;
-    const fromY = from.y + from.h / 2;
-    const toX = to.x + to.w / 2;
-    const toY = to.y + to.h / 2;
+    const x1 = from.x + from.w / 2;
+    const y1 = from.y + from.h / 2;
+    const x2 = to.x + to.w / 2;
+    const y2 = to.y + to.h / 2;
 
-    const line = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "line"
-    );
-    line.setAttribute("x1", fromX);
-    line.setAttribute("y1", fromY);
-    line.setAttribute("x2", toX);
-    line.setAttribute("y2", toY);
-    group.appendChild(line);
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", x1);
+    line.setAttribute("y1", y1);
+    line.setAttribute("x2", x2);
+    line.setAttribute("y2", y2);
+    g.appendChild(line);
 
     if (c.label) {
-      const labelText = document.createElementNS(
-        "http://www.w3.org/2000/svg",
-        "text"
-      );
-      labelText.setAttribute("x", (fromX + toX) / 2 + 4);
-      labelText.setAttribute("y", (fromY + toY) / 2 - 4);
-      labelText.setAttribute("fill", "#e5e7ff");
-      labelText.setAttribute("font-size", "10");
-      labelText.textContent = c.label;
-      group.appendChild(labelText);
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("x", (x1 + x2) / 2 + 4);
+      t.setAttribute("y", (y1 + y2) / 2 - 4);
+      t.setAttribute("fill", "#e5e7ff");
+      t.setAttribute("font-size", "10");
+      t.textContent = c.label;
+      g.appendChild(t);
     }
 
-    connectionsLayer.appendChild(group);
+    connectionsLayer.appendChild(g);
   });
 }
+
+/* -------------------------------------------------------
+   RENDER COMMENTI
+------------------------------------------------------- */
 
 function renderComments() {
   commentsLayer.innerHTML = "";
@@ -582,18 +566,24 @@ function renderComments() {
     // Inspector list
     const item = document.createElement("div");
     item.className = "comment-item";
+
     const header = document.createElement("div");
     header.className = "comment-header";
+
     const sev = document.createElement("span");
     sev.className = "comment-chip " + c.severity;
     sev.textContent = c.severity.toUpperCase();
+
     const status = document.createElement("span");
     status.textContent = c.status;
+
     header.appendChild(sev);
     header.appendChild(status);
+
     const body = document.createElement("div");
     body.className = "comment-body";
     body.textContent = `${c.author}: ${c.text}`;
+
     item.appendChild(header);
     item.appendChild(body);
 
@@ -608,43 +598,49 @@ function renderComments() {
     commentsListEl.appendChild(item);
 
     // Badge on canvas
-    const targetPos = getCommentTargetPosition(c);
-    if (!targetPos) return;
+    const pos = getCommentTargetPosition(c);
+    if (!pos) return;
 
-    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const circle = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "circle"
-    );
-    circle.setAttribute("cx", targetPos.x);
-    circle.setAttribute("cy", targetPos.y);
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", pos.x);
+    circle.setAttribute("cy", pos.y);
     circle.setAttribute("r", 7);
     circle.classList.add("comment-badge", c.severity);
-    group.appendChild(circle);
-    commentsLayer.appendChild(group);
+    g.appendChild(circle);
+
+    commentsLayer.appendChild(g);
   });
 }
 
 function getCommentTargetPosition(comment) {
   const d = workspaceState.currentDiagram;
+
   if (comment.targetElementId) {
     const el = d.elements.find((e) => e.id === comment.targetElementId);
     if (!el) return null;
     return { x: el.x + el.w - 8, y: el.y + 10 };
   }
+
   if (comment.targetConnectionId) {
     const conn = d.connections.find((c) => c.id === comment.targetConnectionId);
     if (!conn) return null;
+
     const from = d.elements.find((e) => e.id === conn.fromId);
     const to = d.elements.find((e) => e.id === conn.toId);
     if (!from || !to) return null;
+
     return {
       x: (from.x + from.w / 2 + to.x + to.w / 2) / 2,
       y: (from.y + from.h / 2 + to.y + to.h / 2) / 2,
     };
   }
+
   return null;
 }
+/* -------------------------------------------------------
+   RENDER INSPECTOR
+------------------------------------------------------- */
 
 function renderInspector() {
   const d = workspaceState.currentDiagram;
@@ -666,13 +662,9 @@ function renderInspector() {
         <label>Stereotype</label>
         <input id="inspStereo" class="input" value="${el.stereotype || ""}" />
         <label>Attributes (one per line)</label>
-        <textarea id="inspAttrs" class="input" rows="4">${(el.attributes || []).join(
-          "\n"
-        )}</textarea>
+        <textarea id="inspAttrs" class="input" rows="4">${(el.attributes || []).join("\n")}</textarea>
         <label>Methods (one per line)</label>
-        <textarea id="inspMethods" class="input" rows="4">${(el.methods || []).join(
-          "\n"
-        )}</textarea>
+        <textarea id="inspMethods" class="input" rows="4">${(el.methods || []).join("\n")}</textarea>
         <button id="inspSave" class="btn small">Save</button>
       </div>
     `;
@@ -696,6 +688,7 @@ function renderInspector() {
       logActivity("update", `Updated element ${el.name}`);
       render();
     };
+
   } else if (selectedConnectionId) {
     const c = d.connections.find((c) => c.id === selectedConnectionId);
     if (!c) {
@@ -722,18 +715,21 @@ function renderInspector() {
     document.getElementById("inspConnSave").onclick = () => {
       pushHistory();
       c.label = document.getElementById("inspConnLabel").value.trim();
-      c.multiplicityFrom = document
-        .getElementById("inspMultFrom")
-        .value.trim();
+      c.multiplicityFrom = document.getElementById("inspMultFrom").value.trim();
       c.multiplicityTo = document.getElementById("inspMultTo").value.trim();
       logActivity("update", `Updated connection ${c.id}`);
       render();
     };
+
   } else {
     inspectorContent.classList.add("empty");
     inspectorContent.innerHTML = "<p>No selection</p>";
   }
 }
+
+/* -------------------------------------------------------
+   RENDER ACTIVITY LOG
+------------------------------------------------------- */
 
 function renderActivityLog() {
   activityLogEl.innerHTML = "";
@@ -745,29 +741,42 @@ function renderActivityLog() {
   });
 }
 
+/* -------------------------------------------------------
+   RENDER DECISION LOG
+------------------------------------------------------- */
+
 function renderDecisionLog() {
   decisionLogEl.innerHTML = "";
   const log = workspaceState.currentDiagram.decisionLog;
   log.forEach((d) => {
     const li = document.createElement("li");
-    li.innerHTML = `<div class="decision-title">${d.title}</div>
-      <div class="decision-reason">${d.reason}</div>`;
+    li.innerHTML = `
+      <div class="decision-title">${d.title}</div>
+      <div class="decision-reason">${d.reason}</div>
+    `;
     decisionLogEl.appendChild(li);
   });
 }
 
+/* -------------------------------------------------------
+   RENDER DIFF LIST
+------------------------------------------------------- */
+
 function renderDiffList() {
   diffListEl.innerHTML = "";
   if (!workspaceState.importedSnapshot) return;
+
   const diff = buildDiff();
   diff.forEach((item, idx) => {
     const li = document.createElement("li");
     li.textContent = `${item.kind} - ${item.summary}`;
     if (item.conflict) li.textContent += " [CONFLICT]";
+
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = true;
     cb.dataset.index = idx;
+
     li.prepend(cb);
     diffListEl.appendChild(li);
   });
@@ -788,12 +797,13 @@ function logActivity(actionType, summary, author = "User") {
 }
 
 /* -------------------------------------------------------
-   ELEMENT / CONNECTION CRUD
+   CRUD ELEMENTI
 ------------------------------------------------------- */
 
 function addElement(kind) {
   pushHistory();
   const d = workspaceState.currentDiagram;
+
   const el = {
     id: uid(),
     x: 120 + Math.random() * 200,
@@ -807,9 +817,11 @@ function addElement(kind) {
     visibility: { public: true },
     kind,
   };
+
   d.elements.push(el);
   selectedElementId = el.id;
   selectedConnectionId = null;
+
   logActivity("create", `Added ${kind} ${el.name}`);
   render();
 }
@@ -827,6 +839,7 @@ function updateElement(id, changes) {
 function deleteElement(id) {
   pushHistory();
   const d = workspaceState.currentDiagram;
+
   d.elements = d.elements.filter((e) => e.id !== id);
   d.connections = d.connections.filter(
     (c) => c.fromId !== id && c.toId !== id
@@ -834,14 +847,20 @@ function deleteElement(id) {
   d.comments = d.comments.filter(
     (c) => c.targetElementId !== id
   );
+
   if (selectedElementId === id) selectedElementId = null;
+
   logActivity("delete", `Deleted element ${id}`);
   render();
 }
+/* -------------------------------------------------------
+   CRUD CONNESSIONI
+------------------------------------------------------- */
 
 function addConnection(type, fromId, toId) {
   pushHistory();
   const d = workspaceState.currentDiagram;
+
   const conn = {
     id: uid(),
     type,
@@ -851,19 +870,36 @@ function addConnection(type, fromId, toId) {
     multiplicityFrom: "",
     multiplicityTo: "",
   };
+
   d.connections.push(conn);
   selectedConnectionId = conn.id;
   selectedElementId = null;
-  logActivity("connect", `Created ${type} between ${fromId} and ${toId}`);
+
+  logActivity("connect", `Created ${type} from ${fromId} to ${toId}`);
+  render();
+}
+
+function deleteConnection(id) {
+  pushHistory();
+  const d = workspaceState.currentDiagram;
+
+  d.connections = d.connections.filter((c) => c.id !== id);
+  d.comments = d.comments.filter((c) => c.targetConnectionId !== id);
+
+  if (selectedConnectionId === id) selectedConnectionId = null;
+
+  logActivity("delete", `Deleted connection ${id}`);
   render();
 }
 
 /* -------------------------------------------------------
-   COMMENTS
+   COMMENTI
 ------------------------------------------------------- */
 
 function addComment(targetElementId, targetConnectionId, author, text, severity) {
   pushHistory();
+  const d = workspaceState.currentDiagram;
+
   const c = {
     commentId: uid(),
     targetElementId,
@@ -874,19 +910,19 @@ function addComment(targetElementId, targetConnectionId, author, text, severity)
     status: "open",
     createdAt: nowIso(),
   };
-  workspaceState.currentDiagram.comments.push(c);
-  logActivity("comment", `Comment added (${severity})`);
+
+  d.comments.push(c);
+  logActivity("comment", `Added comment on ${targetElementId || targetConnectionId}`);
   render();
 }
 
 function resolveComment(commentId) {
   pushHistory();
-  const c = workspaceState.currentDiagram.comments.find(
-    (c) => c.commentId === commentId
-  );
+  const d = workspaceState.currentDiagram;
+  const c = d.comments.find((x) => x.commentId === commentId);
   if (!c) return;
   c.status = "resolved";
-  logActivity("resolve", `Comment resolved`);
+  logActivity("resolve", `Resolved comment ${commentId}`);
   render();
 }
 
@@ -895,36 +931,27 @@ function resolveComment(commentId) {
 ------------------------------------------------------- */
 
 function exportSnapshot() {
-  const d = workspaceState.currentDiagram;
-  const snapshot = {
-    diagram: d,
-  };
-  const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
-    type: "application/json",
-  });
+  const data = JSON.stringify(workspaceState.currentDiagram, null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `${d.name.replace(/\s+/g, "_")}_${d.versionLabel}.json`;
+  a.href = url;
+  a.download = `${workspaceState.currentDiagram.name.replace(/\s+/g, "_")}.json`;
   a.click();
-  URL.revokeObjectURL(a.href);
+
+  URL.revokeObjectURL(url);
 }
 
-function importSnapshot(file) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = JSON.parse(reader.result);
-      if (!parsed.diagram) throw new Error("Invalid snapshot");
-      workspaceState.importedSnapshot = parsed.diagram;
-      openModal("Snapshot imported", "<p>Snapshot loaded for diff/merge.</p>", [
-        { label: "Close", class: "btn", action: closeModal },
-      ]);
-      renderDiffList();
-    } catch (e) {
-      alert("Invalid JSON snapshot");
-    }
-  };
-  reader.readAsText(file);
+function importSnapshot(json) {
+  try {
+    const data = JSON.parse(json);
+    workspaceState.importedSnapshot = data;
+    logActivity("import", "Imported snapshot");
+    render();
+  } catch (e) {
+    alert("Invalid JSON snapshot");
+  }
 }
 
 /* -------------------------------------------------------
@@ -937,46 +964,27 @@ function buildDiff() {
   if (!other) return [];
 
   const diff = [];
-  const baseById = Object.fromEntries(base.elements.map((e) => [e.id, e]));
-  const otherById = Object.fromEntries(other.elements.map((e) => [e.id, e]));
 
-  // Added / removed / changed elements
+  // Elements added
   other.elements.forEach((el) => {
-    const b = baseById[el.id];
-    if (!b) {
+    if (!base.elements.find((e) => e.id === el.id)) {
       diff.push({
         kind: "element-added",
-        targetId: el.id,
+        id: el.id,
         summary: `Element added: ${el.name}`,
         apply: () => {
           base.elements.push(JSON.parse(JSON.stringify(el)));
         },
       });
-    } else if (JSON.stringify(el) !== JSON.stringify(b)) {
-      diff.push({
-        kind: "element-modified",
-        targetId: el.id,
-        summary: `Element modified: ${el.name}`,
-        conflict: true,
-        baseValue: b,
-        otherValue: el,
-        apply: (useOther) => {
-          const idx = base.elements.findIndex((x) => x.id === el.id);
-          if (idx >= 0) {
-            base.elements[idx] = JSON.parse(
-              JSON.stringify(useOther ? other.elements[idx] || el : b)
-            );
-          }
-        },
-      });
     }
   });
 
+  // Elements removed
   base.elements.forEach((el) => {
-    if (!otherById[el.id]) {
+    if (!other.elements.find((e) => e.id === el.id)) {
       diff.push({
         kind: "element-removed",
-        targetId: el.id,
+        id: el.id,
         summary: `Element removed: ${el.name}`,
         apply: () => {
           base.elements = base.elements.filter((e) => e.id !== el.id);
@@ -985,26 +993,50 @@ function buildDiff() {
     }
   });
 
-  // Connections simple diff
-  const baseConnIds = new Set(base.connections.map((c) => c.id));
-  const otherConnIds = new Set(other.connections.map((c) => c.id));
+  // Elements modified
+  other.elements.forEach((elB) => {
+    const elA = base.elements.find((e) => e.id === elB.id);
+    if (!elA) return;
 
-  other.connections.forEach((c) => {
-    if (!baseConnIds.has(c.id)) {
+    const fields = ["name", "stereotype", "attributes", "methods", "x", "y", "w", "h"];
+    let changed = false;
+    fields.forEach((f) => {
+      if (JSON.stringify(elA[f]) !== JSON.stringify(elB[f])) changed = true;
+    });
+
+    if (changed) {
       diff.push({
-        kind: "connection-added",
-        targetId: c.id,
-        summary: `Connection added: ${c.type}`,
-        apply: () => base.connections.push(JSON.parse(JSON.stringify(c))),
+        kind: "element-modified",
+        id: elA.id,
+        summary: `Element modified: ${elA.name}`,
+        conflict: false,
+        apply: () => {
+          Object.assign(elA, JSON.parse(JSON.stringify(elB)));
+        },
       });
     }
   });
 
+  // Connections added
+  other.connections.forEach((c) => {
+    if (!base.connections.find((x) => x.id === c.id)) {
+      diff.push({
+        kind: "connection-added",
+        id: c.id,
+        summary: `Connection added: ${c.type}`,
+        apply: () => {
+          base.connections.push(JSON.parse(JSON.stringify(c)));
+        },
+      });
+    }
+  });
+
+  // Connections removed
   base.connections.forEach((c) => {
-    if (!otherConnIds.has(c.id)) {
+    if (!other.connections.find((x) => x.id === c.id)) {
       diff.push({
         kind: "connection-removed",
-        targetId: c.id,
+        id: c.id,
         summary: `Connection removed: ${c.type}`,
         apply: () => {
           base.connections = base.connections.filter((x) => x.id !== c.id);
@@ -1013,30 +1045,30 @@ function buildDiff() {
     }
   });
 
-  // Comments new/resolved
-  const baseCommentsById = Object.fromEntries(
-    base.comments.map((c) => [c.commentId, c])
-  );
-  const otherCommentsById = Object.fromEntries(
-    other.comments.map((c) => [c.commentId, c])
-  );
-
+  // Comments added
   other.comments.forEach((c) => {
-    const b = baseCommentsById[c.commentId];
-    if (!b) {
+    if (!base.comments.find((x) => x.commentId === c.commentId)) {
       diff.push({
         kind: "comment-added",
-        targetId: c.commentId,
+        id: c.commentId,
         summary: `Comment added (${c.severity})`,
-        apply: () => base.comments.push(JSON.parse(JSON.stringify(c))),
-      });
-    } else if (b.status !== c.status) {
-      diff.push({
-        kind: "comment-status",
-        targetId: c.commentId,
-        summary: `Comment status change: ${b.status} -> ${c.status}`,
         apply: () => {
-          b.status = c.status;
+          base.comments.push(JSON.parse(JSON.stringify(c)));
+        },
+      });
+    }
+  });
+
+  // Comments resolved
+  other.comments.forEach((c) => {
+    const baseC = base.comments.find((x) => x.commentId === c.commentId);
+    if (baseC && baseC.status !== c.status) {
+      diff.push({
+        kind: "comment-status-changed",
+        id: c.commentId,
+        summary: `Comment ${c.commentId} status changed`,
+        apply: () => {
+          baseC.status = c.status;
         },
       });
     }
@@ -1045,71 +1077,70 @@ function buildDiff() {
   return diff;
 }
 
-function applyDiff(applyAll = false) {
-  if (!workspaceState.importedSnapshot) return;
+function applyDiff(selectedOnly = false) {
   const diff = buildDiff();
-  const checkboxes = diffListEl.querySelectorAll("input[type=checkbox]");
-  diff.forEach((item, index) => {
-    const cb = checkboxes[index];
-    if (!cb && !applyAll) return;
-    if (!applyAll && !cb.checked) return;
+  const items = diffListEl.querySelectorAll("input[type=checkbox]");
 
-    if (item.conflict) {
-      // Simple conflict resolution: ask once per item
-      const useOther = confirm(
-        `Conflict for ${item.summary}. OK = use imported version, Cancel = keep local`
-      );
-      item.apply(useOther);
-    } else if (item.apply) {
-      item.apply(true);
-    }
+  diff.forEach((item, idx) => {
+    if (selectedOnly && !items[idx].checked) return;
+    item.apply();
   });
-  logActivity("update", "Diff applied");
+
+  logActivity("merge", "Applied diff");
   render();
 }
-
 /* -------------------------------------------------------
-   PLANTUML EXPORT (CLASS DIAGRAM)
+   PLANTUML EXPORT
 ------------------------------------------------------- */
 
 function exportPlantUML() {
   const d = workspaceState.currentDiagram;
-  const lines = ["@startuml"];
+  if (d.type !== "class") {
+    alert("PlantUML export is only available for Class Diagrams.");
+    return;
+  }
 
+  let out = "@startuml\n\n";
+
+  // Classes & interfaces
   d.elements.forEach((el) => {
     if (el.kind === "interface") {
-      lines.push(`interface ${el.name} {`);
+      out += `interface ${el.name} {\n`;
     } else {
-      lines.push(`class ${el.name} {`);
+      out += `class ${el.name} {\n`;
     }
-    (el.attributes || []).forEach((a) => lines.push(`  ${a}`));
-    if (el.methods && el.methods.length) lines.push("--");
-    (el.methods || []).forEach((m) => lines.push(`  ${m}`));
-    lines.push("}");
+
+    (el.attributes || []).forEach((a) => {
+      out += `  ${a}\n`;
+    });
+    (el.methods || []).forEach((m) => {
+      out += `  ${m}\n`;
+    });
+
+    out += "}\n\n";
   });
 
+  // Connections
   d.connections.forEach((c) => {
     const from = d.elements.find((e) => e.id === c.fromId);
     const to = d.elements.find((e) => e.id === c.toId);
     if (!from || !to) return;
+
     let arrow = "--";
     if (c.type === "inheritance") arrow = " --|> ";
-    else if (c.type === "realization") arrow = " ..|> ";
-    else if (c.type === "dependency") arrow = " ..> ";
-    else arrow = " -- ";
-    let rel = `${from.name}${arrow}${to.name}`;
-    if (c.label) rel += ` : ${c.label}`;
-    lines.push(rel);
+    if (c.type === "realization") arrow = " ..|> ";
+    if (c.type === "dependency") arrow = " ..> ";
+    if (c.type === "association") arrow = " -- ";
+
+    out += `${from.name}${arrow}${to.name}`;
+    if (c.label) out += ` : ${c.label}`;
+    out += "\n";
   });
 
-  lines.push("@enduml");
-  const text = lines.join("\n");
-  navigator.clipboard.writeText(text).then(() => {
-    openModal(
-      "PlantUML copied",
-      "<p>PlantUML representation copied to clipboard.</p>",
-      [{ label: "Close", class: "btn", action: closeModal }]
-    );
+  out += "\n@enduml";
+
+  navigator.clipboard.writeText(out).then(() => {
+    alert("PlantUML copied to clipboard!");
   });
 }
 
@@ -1119,66 +1150,50 @@ function exportPlantUML() {
 
 function exportSVG() {
   const serializer = new XMLSerializer();
-  const svgString = serializer.serializeToString(svg);
-  const blob = new Blob([svgString], { type: "image/svg+xml" });
+  const svgData = serializer.serializeToString(svg);
+
+  const blob = new Blob([svgData], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = "diagram.svg";
   a.click();
-  URL.revokeObjectURL(a.href);
+
+  URL.revokeObjectURL(url);
 }
 
 function exportPNG() {
   const serializer = new XMLSerializer();
-  const svgString = serializer.serializeToString(svg);
+  const svgData = serializer.serializeToString(svg);
+
   const img = new Image();
-  const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+  const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);
+
   img.onload = function () {
     const canvas = document.createElement("canvas");
-    canvas.width = svg.clientWidth * 2;
-    canvas.height = svg.clientHeight * 2;
+    canvas.width = img.width * 2;
+    canvas.height = img.height * 2;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#050816";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    URL.revokeObjectURL(url);
+    ctx.scale(2, 2);
+    ctx.drawImage(img, 0, 0);
 
     canvas.toBlob((blob) => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = "diagram.png";
       a.click();
-      URL.revokeObjectURL(a.href);
     });
+
+    URL.revokeObjectURL(url);
   };
+
   img.src = url;
 }
 
 /* -------------------------------------------------------
-   MODAL
-------------------------------------------------------- */
-
-function openModal(title, bodyHTML, actions = []) {
-  modalTitleEl.textContent = title;
-  modalBodyEl.innerHTML = bodyHTML;
-  modalFooterEl.innerHTML = "";
-  actions.forEach((a) => {
-    const btn = document.createElement("button");
-    btn.textContent = a.label;
-    btn.className = a.class || "btn";
-    btn.addEventListener("click", a.action);
-    modalFooterEl.appendChild(btn);
-  });
-  modalOverlay.classList.remove("hidden");
-}
-
-function closeModal() {
-  modalOverlay.classList.add("hidden");
-}
-
-/* -------------------------------------------------------
-   HIT TEST & INTERACTION
+   HIT TEST
 ------------------------------------------------------- */
 
 function hitTestElement(x, y) {
@@ -1194,18 +1209,22 @@ function hitTestElement(x, y) {
 
 function hitTestConnection(x, y) {
   const d = workspaceState.currentDiagram;
-  const threshold = 8;
-  for (const c of d.connections) {
+
+  for (let i = d.connections.length - 1; i >= 0; i--) {
+    const c = d.connections[i];
     const from = d.elements.find((e) => e.id === c.fromId);
     const to = d.elements.find((e) => e.id === c.toId);
     if (!from || !to) continue;
+
     const x1 = from.x + from.w / 2;
     const y1 = from.y + from.h / 2;
     const x2 = to.x + to.w / 2;
     const y2 = to.y + to.h / 2;
+
     const dist = pointLineDistance(x, y, x1, y1, x2, y2);
-    if (dist < threshold) return c;
+    if (dist < 6) return c;
   }
+
   return null;
 }
 
@@ -1214,11 +1233,14 @@ function pointLineDistance(px, py, x1, y1, x2, y2) {
   const B = py - y1;
   const C = x2 - x1;
   const D = y2 - y1;
+
   const dot = A * C + B * D;
   const lenSq = C * C + D * D;
   let param = -1;
   if (lenSq !== 0) param = dot / lenSq;
+
   let xx, yy;
+
   if (param < 0) {
     xx = x1;
     yy = y1;
@@ -1229,49 +1251,100 @@ function pointLineDistance(px, py, x1, y1, x2, y2) {
     xx = x1 + param * C;
     yy = y1 + param * D;
   }
+
   const dx = px - xx;
   const dy = py - yy;
   return Math.sqrt(dx * dx + dy * dy);
 }
 
 /* -------------------------------------------------------
-   MOUSE HANDLERS
+   PAN / ZOOM
 ------------------------------------------------------- */
+
+function applyTransform() {
+  const t = `translate(${panState.offsetX}, ${panState.offsetY}) scale(${zoom})`;
+  elementsLayer.setAttribute("transform", t);
+  connectionsLayer.setAttribute("transform", t);
+  commentsLayer.setAttribute("transform", t);
+}
+
+zoomSlider.addEventListener("input", () => {
+  zoom = zoomSlider.value / 100;
+  zoomValue.textContent = `${zoomSlider.value}%`;
+  applyTransform();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space") spacePressed = true;
+});
+
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space") spacePressed = false;
+});
+/* -------------------------------------------------------
+   CANVAS EVENTS (mousedown / mousemove / mouseup)
+------------------------------------------------------- */
+
+function clientToSvgPoint(evt) {
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX;
+  pt.y = evt.clientY;
+  const screenCTM = svg.getScreenCTM();
+  return pt.matrixTransform(screenCTM.inverse());
+}
 
 svg.addEventListener("mousedown", (e) => {
   const pt = clientToSvgPoint(e);
-  if (currentTool === "pan" || (e.button === 1 || (e.button === 0 && e.spaceKey))) {
+  const x = (pt.x - panState.offsetX) / zoom;
+  const y = (pt.y - panState.offsetY) / zoom;
+
+  const el = hitTestElement(x, y);
+  const conn = !el ? hitTestConnection(x, y) : null;
+
+  /* ---------------------------------------------
+     1) TOOL: ADD COMMENT (priorità assoluta)
+  --------------------------------------------- */
+  if (currentTool === "add-comment") {
+    if (!el && !conn) return;
+    openCommentModal(el ? el.id : null, conn ? conn.id : null);
+    return;
+  }
+
+  /* ---------------------------------------------
+     2) TOOL: ADD CLASS / INTERFACE
+  --------------------------------------------- */
+  if (currentTool === "add-class") {
+    addElement("class");
+    resetToolButtons();
+    currentTool = "select";
+    return;
+  }
+
+  if (currentTool === "add-interface") {
+    addElement("interface");
+    resetToolButtons();
+    currentTool = "select";
+    return;
+  }
+
+  /* ---------------------------------------------
+     3) TOOL: PAN (o Space + drag)
+  --------------------------------------------- */
+  if (
+    currentTool === "pan" ||
+    e.button === 1 ||
+    (e.button === 0 && spacePressed)
+  ) {
     panState.active = true;
     panState.startX = e.clientX;
     panState.startY = e.clientY;
     return;
   }
 
-  const el = hitTestElement(pt.x, pt.y);
-  const conn = !el ? hitTestConnection(pt.x, pt.y) : null;
-
-  if (currentTool === "select") {
-    if (el) {
-      selectedElementId = el.id;
-      selectedConnectionId = null;
-      dragState = {
-        id: el.id,
-        startX: pt.x,
-        startY: pt.y,
-        origX: el.x,
-        origY: el.y,
-      };
-    } else if (conn) {
-      selectedConnectionId = conn.id;
-      selectedElementId = null;
-    } else {
-      selectedElementId = null;
-      selectedConnectionId = null;
-    }
-    renderInspector();
-    renderElements();
-    renderConnections();
-  } else if (
+  /* ---------------------------------------------
+     4) TOOL: CONNECTIONS
+  --------------------------------------------- */
+  if (
     currentTool === "assoc" ||
     currentTool === "inheritance" ||
     currentTool === "realization" ||
@@ -1279,21 +1352,58 @@ svg.addEventListener("mousedown", (e) => {
   ) {
     if (el) {
       if (!connectionDraft) {
-        connectionDraft = { type: currentToolToConnectionType(), fromId: el.id };
+        connectionDraft = { type: currentTool, fromId: el.id };
       } else {
         if (connectionDraft.fromId !== el.id) {
           addConnection(connectionDraft.type, connectionDraft.fromId, el.id);
           connectionDraft = null;
+          resetToolButtons();
+          currentTool = "select";
         }
       }
     }
-  } else if (currentTool === "add-comment") {
-    if (!el && !conn) return;
-    openCommentModal(el ? el.id : null, conn ? conn.id : null);
+    return;
+  }
+
+  /* ---------------------------------------------
+     5) TOOL: SELECT
+  --------------------------------------------- */
+  if (currentTool === "select") {
+    if (el) {
+      selectedElementId = el.id;
+      selectedConnectionId = null;
+
+      dragState = {
+        id: el.id,
+        startX: x,
+        startY: y,
+        origX: el.x,
+        origY: el.y,
+      };
+      renderInspector();
+      return;
+    }
+
+    if (conn) {
+      selectedConnectionId = conn.id;
+      selectedElementId = null;
+      renderInspector();
+      return;
+    }
+
+    // Click vuoto → deseleziona
+    selectedElementId = null;
+    selectedConnectionId = null;
+    renderInspector();
   }
 });
 
 svg.addEventListener("mousemove", (e) => {
+  const pt = clientToSvgPoint(e);
+  const x = (pt.x - panState.offsetX) / zoom;
+  const y = (pt.y - panState.offsetY) / zoom;
+
+  /* PAN */
   if (panState.active) {
     const dx = e.clientX - panState.startX;
     const dy = e.clientY - panState.startY;
@@ -1301,58 +1411,59 @@ svg.addEventListener("mousemove", (e) => {
     panState.offsetY += dy;
     panState.startX = e.clientX;
     panState.startY = e.clientY;
-    updateSvgTransform();
+    applyTransform();
     return;
   }
 
+  /* DRAG ELEMENT */
   if (dragState) {
-    const pt = clientToSvgPoint(e);
     const el = workspaceState.currentDiagram.elements.find(
       (e) => e.id === dragState.id
     );
     if (!el) return;
-    const dx = pt.x - dragState.startX;
-    const dy = pt.y - dragState.startY;
-    el.x = Math.round((dragState.origX + dx) / 10) * 10;
-    el.y = Math.round((dragState.origY + dy) / 10) * 10;
+
+    const dx = x - dragState.startX;
+    const dy = y - dragState.startY;
+
+    el.x = dragState.origX + dx;
+    el.y = dragState.origY + dy;
+
     renderElements();
     renderConnections();
+    renderComments();
   }
 });
 
 svg.addEventListener("mouseup", () => {
   if (dragState) {
+    logActivity("move", `Moved element ${dragState.id}`);
+    dragState = null;
     pushHistory();
-    logActivity("move", "Element moved");
   }
-  dragState = null;
   panState.active = false;
 });
 
-/* Inline rename on double click */
-svg.addEventListener("dblclick", (e) => {
-  const pt = clientToSvgPoint(e);
-  const el = hitTestElement(pt.x, pt.y);
-  if (!el) return;
-  const newName = prompt("Rename element", el.name);
-  if (newName && newName.trim()) {
-    updateElement(el.id, { name: newName.trim() });
-  }
+/* -------------------------------------------------------
+   TOOL BUTTONS
+------------------------------------------------------- */
+
+document.querySelectorAll(".tool-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tool-btn").forEach((b) =>
+      b.classList.remove("active")
+    );
+    btn.classList.add("active");
+    currentTool = btn.dataset.tool;
+    connectionDraft = null;
+  });
 });
 
-function clientToSvgPoint(e) {
-  const rect = svg.getBoundingClientRect();
-  const x = (e.clientX - rect.left - panState.offsetX) / zoom;
-  const y = (e.clientY - rect.top - panState.offsetY) / zoom;
-  return { x, y };
-}
-
-/* SVG transform for pan & zoom */
-function updateSvgTransform() {
-  const t = `translate(${panState.offsetX},${panState.offsetY}) scale(${zoom})`;
-  elementsLayer.setAttribute("transform", t);
-  connectionsLayer.setAttribute("transform", t);
-  commentsLayer.setAttribute("transform", t);
+function resetToolButtons() {
+  document.querySelectorAll(".tool-btn").forEach((b) =>
+    b.classList.remove("active")
+  );
+  const selectBtn = document.querySelector('.tool-btn[data-tool="select"]');
+  if (selectBtn) selectBtn.classList.add("active");
 }
 
 /* -------------------------------------------------------
@@ -1360,147 +1471,50 @@ function updateSvgTransform() {
 ------------------------------------------------------- */
 
 function openCommentModal(targetElementId, targetConnectionId) {
-  const body = `
-    <label class="label-small">Author</label>
-    <input id="commentAuthor" class="input" value="Reviewer" />
-    <label class="label-small">Severity</label>
+  modalTitleEl.textContent = "Add Comment";
+  modalBodyEl.innerHTML = `
+    <label>Author</label>
+    <input id="commentAuthor" class="input" />
+    <label>Text</label>
+    <textarea id="commentText" class="input" rows="3"></textarea>
+    <label>Severity</label>
     <select id="commentSeverity" class="input">
       <option value="info">Info</option>
       <option value="warn">Warn</option>
       <option value="blocker">Blocker</option>
     </select>
-    <label class="label-small">Text</label>
-    <textarea id="commentText" class="input" rows="3"></textarea>
   `;
-  openModal("Add Comment", body, [
-    {
-      label: "Cancel",
-      class: "btn ghost",
-      action: closeModal,
-    },
-    {
-      label: "Add",
-      class: "btn",
-      action: () => {
-        const author = document.getElementById("commentAuthor").value.trim();
-        const severity = document.getElementById("commentSeverity").value;
-        const text = document.getElementById("commentText").value.trim();
-        if (!text) return;
-        addComment(targetElementId, targetConnectionId, author || "Reviewer", text, severity);
-        closeModal();
-      },
-    },
-  ]);
-}
 
-/* -------------------------------------------------------
-   TOOL SWITCHING
-------------------------------------------------------- */
+  modalFooterEl.innerHTML = `
+    <button id="commentCancel" class="btn ghost small">Cancel</button>
+    <button id="commentSave" class="btn small">Save</button>
+  `;
 
-document.querySelectorAll(".tool-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tool-btn").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    currentTool = btn.dataset.tool;
-    connectionDraft = null;
-  });
-});
+  modalOverlay.classList.remove("hidden");
 
-function currentToolToConnectionType() {
-  switch (currentTool) {
-    case "assoc":
-      return "association";
-    case "inheritance":
-      return "inheritance";
-    case "realization":
-      return "realization";
-    case "dependency":
-      return "dependency";
-    default:
-      return "association";
-  }
-}
+  document.getElementById("commentCancel").onclick = closeModal;
+  document.getElementById("commentSave").onclick = () => {
+    const author = document.getElementById("commentAuthor").value.trim();
+    const text = document.getElementById("commentText").value.trim();
+    const severity = document.getElementById("commentSeverity").value;
 
-/* -------------------------------------------------------
-   UI CONTROLS & SHORTCUTS
-------------------------------------------------------- */
+    if (!author || !text) {
+      alert("Author and text are required.");
+      return;
+    }
 
-/* New Diagram */
-document.getElementById("newDiagramBtn").addEventListener("click", () => {
-  if (!confirm("Start a new empty diagram? Current changes will be lost.")) return;
-  workspaceState.currentDiagram = createEmptyDiagram();
-  pushHistory();
-  render();
-});
-
-/* Recent button: just opens modal listing what is already in sidebar */
-document.getElementById("recentWorkspacesBtn").addEventListener("click", () => {
-  const raw = localStorage.getItem("umlSyncboard:recent");
-  const list = raw ? JSON.parse(raw) : [];
-  const body = list.length
-    ? `<ul>${list.map((n) => `<li>${n}</li>`).join("")}</ul>`
-    : "<p>No recent workspaces</p>";
-  openModal("Recent Workspaces", body, [
-    { label: "Close", class: "btn", action: closeModal },
-  ]);
-});
-
-/* Snapshot export/import */
-document.getElementById("exportSnapshotBtn").addEventListener("click", exportSnapshot);
-
-document.getElementById("importSnapshotBtn").addEventListener("click", () => {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "application/json";
-  input.onchange = () => {
-    const file = input.files[0];
-    if (file) importSnapshot(file);
+    addComment(targetElementId, targetConnectionId, author, text, severity);
+    closeModal();
   };
-  input.click();
-});
+}
 
-/* Diff build / apply */
-document.getElementById("buildDiffBtn").addEventListener("click", () => {
-  if (!workspaceState.importedSnapshot) {
-    openModal("No snapshot", "<p>Import a snapshot first.</p>", [
-      { label: "Close", class: "btn", action: closeModal },
-    ]);
-    return;
-  }
-  renderDiffList();
-});
+function closeModal() {
+  modalOverlay.classList.add("hidden");
+}
+/* -------------------------------------------------------
+   REVIEW MODE + FILTER
+------------------------------------------------------- */
 
-document.getElementById("applyAllDiffBtn").addEventListener("click", () => {
-  if (!workspaceState.importedSnapshot) return;
-  pushHistory();
-  applyDiff(true);
-});
-
-/* Decision log */
-document.getElementById("decisionForm").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const title = document.getElementById("decisionTitle").value.trim();
-  const reason = document.getElementById("decisionReason").value.trim();
-  if (!title || !reason) return;
-  workspaceState.currentDiagram.decisionLog.push({
-    time: nowIso(),
-    author: "User",
-    title,
-    reason,
-  });
-  document.getElementById("decisionTitle").value = "";
-  document.getElementById("decisionReason").value = "";
-  logActivity("update", "Decision added");
-  renderDecisionLog();
-});
-
-/* Workspace name */
-workspaceNameInput.addEventListener("change", () => {
-  workspaceState.workspaceName = workspaceNameInput.value || "Default workspace";
-  autosave();
-});
-
-/* Review mode */
 reviewModeToggle.addEventListener("click", () => {
   workspaceState.reviewMode = !workspaceState.reviewMode;
   reviewModeToggle.classList.toggle("active", workspaceState.reviewMode);
@@ -1509,106 +1523,192 @@ reviewModeToggle.addEventListener("click", () => {
 
 reviewSeverityFilter.addEventListener("change", () => {
   workspaceState.reviewSeverity = reviewSeverityFilter.value;
-  renderComments();
-  renderElements();
+  render();
 });
 
-/* PlantUML, SVG, PNG */
-document.getElementById("exportPlantUMLBtn").addEventListener("click", exportPlantUML);
-document.getElementById("exportSVGBtn").addEventListener("click", exportSVG);
-document.getElementById("exportPNGBtn").addEventListener("click", exportPNG);
+/* -------------------------------------------------------
+   KEYBOARD SHORTCUTS
+------------------------------------------------------- */
 
-/* Zoom slider */
-zoomSlider.addEventListener("input", () => {
-  zoom = Number(zoomSlider.value) / 100;
-  zoomValue.textContent = `${zoomSlider.value}%`;
-  updateSvgTransform();
+document.addEventListener("keydown", (e) => {
+  // Delete element/connection
+  if (e.key === "Delete") {
+    if (selectedElementId) deleteElement(selectedElementId);
+    if (selectedConnectionId) deleteConnection(selectedConnectionId);
+  }
+
+  // Undo / Redo
+  if (e.ctrlKey && e.key === "z") {
+    e.preventDefault();
+    undo();
+  }
+  if (e.ctrlKey && e.key === "y") {
+    e.preventDefault();
+    redo();
+  }
+
+  // Export snapshot
+  if (e.ctrlKey && e.key === "s") {
+    e.preventDefault();
+    exportSnapshot();
+  }
+
+  // Quick search
+  if (e.ctrlKey && e.key === "f") {
+    e.preventDefault();
+    openQuickSearch();
+  }
 });
 
-/* Quick search */
-document.getElementById("quickSearchBtn").addEventListener("click", openQuickSearchModal);
+/* -------------------------------------------------------
+   QUICK SEARCH
+------------------------------------------------------- */
 
-function openQuickSearchModal() {
-  const d = workspaceState.currentDiagram;
-  let body = `
-    <input id="quickSearchInput" class="input" placeholder="Search by name..." />
-    <div id="quickSearchResults" style="margin-top:6px; max-height:160px; overflow:auto;"></div>
+function openQuickSearch() {
+  modalTitleEl.textContent = "Quick Search";
+  modalBodyEl.innerHTML = `
+    <input id="qsInput" class="input" placeholder="Search element by name..." />
+    <div id="qsResults" style="margin-top:10px; max-height:200px; overflow:auto;"></div>
   `;
-  openModal("Quick Search", body, [
-    { label: "Close", class: "btn", action: closeModal },
-  ]);
+  modalFooterEl.innerHTML = `
+    <button class="btn small ghost" id="qsClose">Close</button>
+  `;
 
-  const input = document.getElementById("quickSearchInput");
-  const results = document.getElementById("quickSearchResults");
+  modalOverlay.classList.remove("hidden");
+
+  document.getElementById("qsClose").onclick = closeModal;
+
+  const input = document.getElementById("qsInput");
+  const results = document.getElementById("qsResults");
 
   input.addEventListener("input", () => {
     const q = input.value.toLowerCase();
     results.innerHTML = "";
-    d.elements
-      .filter((el) => el.name.toLowerCase().includes(q))
-      .forEach((el) => {
+
+    workspaceState.currentDiagram.elements.forEach((el) => {
+      if (el.name.toLowerCase().includes(q)) {
         const div = document.createElement("div");
         div.className = "quickfind-item";
         div.textContent = el.name;
-        div.addEventListener("click", () => {
+        div.onclick = () => {
           selectedElementId = el.id;
           selectedConnectionId = null;
-          render();
           closeModal();
-        });
+          render();
+        };
         results.appendChild(div);
-      });
+      }
+    });
   });
+
   input.focus();
 }
 
-/* Shortcuts */
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Delete" && selectedElementId) {
-    e.preventDefault();
-    deleteElement(selectedElementId);
-  } else if (e.key.toLowerCase() === "s" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    exportSnapshot();
-  } else if (e.key.toLowerCase() === "f" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    openQuickSearchModal();
-  } else if (e.key.toLowerCase() === "z" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    if (e.shiftKey) redo();
-    else undo();
-  } else if (e.key.toLowerCase() === "y" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    redo();
-  } else if (e.code === "Space") {
-    e.preventDefault();
-    // aid for pan: mark flag used in mousedown
-    e.spaceKey = true;
-  }
+/* -------------------------------------------------------
+   NEW DIAGRAM
+------------------------------------------------------- */
+
+document.getElementById("newDiagramBtn").addEventListener("click", () => {
+  if (!confirm("Create a new empty diagram?")) return;
+  workspaceState.currentDiagram = createEmptyDiagram();
+  selectedElementId = null;
+  selectedConnectionId = null;
+  render();
 });
 
-/* Modal close */
-modalCloseBtn.addEventListener("click", closeModal);
+/* -------------------------------------------------------
+   IMPORT SNAPSHOT BUTTON
+------------------------------------------------------- */
+
+document.getElementById("importSnapshotBtn").addEventListener("click", () => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json";
+
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      importSnapshot(reader.result);
+    };
+    reader.readAsText(file);
+  };
+
+  input.click();
+});
+
+/* -------------------------------------------------------
+   EXPORT BUTTONS
+------------------------------------------------------- */
+
+document.getElementById("exportSnapshotBtn").addEventListener("click", exportSnapshot);
+document.getElementById("exportPlantUMLBtn").addEventListener("click", exportPlantUML);
+document.getElementById("exportSVGBtn").addEventListener("click", exportSVG);
+document.getElementById("exportPNGBtn").addEventListener("click", exportPNG);
+
+/* -------------------------------------------------------
+   DIFF BUTTONS
+------------------------------------------------------- */
+
+document.getElementById("buildDiffBtn").addEventListener("click", () => {
+  renderDiffList();
+});
+
+document.getElementById("applyAllDiffBtn").addEventListener("click", () => {
+  applyDiff(false);
+});
+
+/* -------------------------------------------------------
+   DECISION LOG FORM
+------------------------------------------------------- */
+
+document.getElementById("decisionForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const title = document.getElementById("decisionTitle").value.trim();
+  const reason = document.getElementById("decisionReason").value.trim();
+  if (!title || !reason) return;
+
+  workspaceState.currentDiagram.decisionLog.push({
+    time: nowIso(),
+    author: "User",
+    title,
+    reason,
+  });
+
+  document.getElementById("decisionTitle").value = "";
+  document.getElementById("decisionReason").value = "";
+
+  logActivity("decision", `Added decision: ${title}`);
+  render();
+});
+
+/* -------------------------------------------------------
+   WORKSPACE NAME
+------------------------------------------------------- */
+
+workspaceNameInput.addEventListener("change", () => {
+  workspaceState.workspaceName = workspaceNameInput.value.trim();
+  autosave();
+});
 
 /* -------------------------------------------------------
    INIT
 ------------------------------------------------------- */
 
 function init() {
-  // Try load default workspace, else demo
-  workspaceNameInput.value = workspaceState.workspaceName;
-  const key = `umlSyncboard:${workspaceState.workspaceName}`;
-  const raw = localStorage.getItem(key);
-  if (raw) {
-    workspaceState.currentDiagram = JSON.parse(raw);
-  } else {
-    workspaceState.currentDiagram = createDemoDiagram();
-    pushHistory();
-  }
   loadRecentWorkspacesFromStorage();
-  zoom = 1;
-  updateSvgTransform();
+
+  // Load demo diagram on first run
+  if (!workspaceState.currentDiagram) {
+    workspaceState.currentDiagram = createDemoDiagram();
+  }
+
+  workspaceNameInput.value = workspaceState.workspaceName;
   render();
 }
+
+modalCloseBtn.addEventListener("click", closeModal);
 
 init();
