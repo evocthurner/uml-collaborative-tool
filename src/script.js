@@ -1361,7 +1361,7 @@ svg.addEventListener("mousedown", (e) => {
   }
 
   /* ---------------------------------------------
-     4) TOOL: CONNECTIONS
+     4) TOOL: CONNECTIONS (FIX COMPLETO)
   --------------------------------------------- */
   if (
     currentTool === "assoc" ||
@@ -1369,18 +1369,28 @@ svg.addEventListener("mousedown", (e) => {
     currentTool === "realization" ||
     currentTool === "dependency"
   ) {
-    if (el) {
-      if (!connectionDraft) {
-        connectionDraft = { type: currentTool, fromId: el.id };
-      } else {
-        if (connectionDraft.fromId !== el.id) {
-          addConnection(connectionDraft.type, connectionDraft.fromId, el.id);
-          connectionDraft = null;
-          resetToolButtons();
-          currentTool = "select";
-        }
-      }
+    // Devi cliccare su un elemento UML
+    if (!el) return;
+
+    // Primo click → seleziona sorgente
+    if (!connectionDraft) {
+      connectionDraft = { type: currentTool, fromId: el.id };
+      selectedElementId = el.id; // feedback visivo
+      renderInspector();
+      return;
     }
+
+    // Secondo click → crea connessione
+    if (connectionDraft.fromId !== el.id) {
+      addConnection(connectionDraft.type, connectionDraft.fromId, el.id);
+    }
+
+    // Reset tool
+    connectionDraft = null;
+    selectedElementId = null;
+    resetToolButtons();
+    currentTool = "select";
+    renderInspector();
     return;
   }
 
@@ -1416,6 +1426,7 @@ svg.addEventListener("mousedown", (e) => {
     renderInspector();
   }
 });
+
 
 svg.addEventListener("mousemove", (e) => {
   const pt = clientToSvgPoint(e);
