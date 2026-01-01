@@ -35,6 +35,8 @@ let currentTool = "select";
 let selectedElementId = null;
 let selectedConnectionId = null;
 let connectionDraft = null;
+let connectionPreview = null;
+
 
 let dragState = null;
 let panState = { active: false, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
@@ -434,6 +436,37 @@ function render() {
 /* -------------------------------------------------------
    RENDER ELEMENTI
 ------------------------------------------------------- */
+function renderConnectionPreview(x, y) {
+  if (!connectionDraft) return;
+
+  if (!connectionPreview) {
+    connectionPreview = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    connectionPreview.setAttribute("stroke", "rgba(255,255,255,0.4)");
+    connectionPreview.setAttribute("stroke-width", "1.5");
+    connectionPreview.setAttribute("stroke-dasharray", "4 3");
+    connectionsLayer.appendChild(connectionPreview);
+  }
+
+  const d = workspaceState.currentDiagram;
+  const from = d.elements.find(e => e.id === connectionDraft.fromId);
+  if (!from) return;
+
+  const x1 = from.x + from.w / 2;
+  const y1 = from.y + from.h / 2;
+
+  connectionPreview.setAttribute("x1", x1);
+  connectionPreview.setAttribute("y1", y1);
+  connectionPreview.setAttribute("x2", x);
+  connectionPreview.setAttribute("y2", y);
+}
+
+function clearConnectionPreview() {
+  if (connectionPreview) {
+    connectionPreview.remove();
+    connectionPreview = null;
+  }
+}
+
 
 function renderElements() {
   elementsLayer.innerHTML = "";
@@ -1364,35 +1397,33 @@ svg.addEventListener("mousedown", (e) => {
      4) TOOL: CONNECTIONS (FIX COMPLETO)
   --------------------------------------------- */
   if (
-    currentTool === "assoc" ||
-    currentTool === "inheritance" ||
-    currentTool === "realization" ||
-    currentTool === "dependency"
-  ) {
-    // Devi cliccare su un elemento UML
-    if (!el) return;
+  currentTool === "assoc" ||
+  currentTool === "inheritance" ||
+  currentTool === "realization" ||
+  currentTool === "dependency"
+) {
+  if (!el) return;
 
-    // Primo click → seleziona sorgente
-    if (!connectionDraft) {
-      connectionDraft = { type: currentTool, fromId: el.id };
-      selectedElementId = el.id; // feedback visivo
-      renderInspector();
-      return;
-    }
-
-    // Secondo click → crea connessione
-    if (connectionDraft.fromId !== el.id) {
-      addConnection(connectionDraft.type, connectionDraft.fromId, el.id);
-    }
-
-    // Reset tool
-    connectionDraft = null;
-    selectedElementId = null;
-    resetToolButtons();
-    currentTool = "select";
+  if (!connectionDraft) {
+    connectionDraft = { type: currentTool, fromId: el.id };
+    selectedElementId = el.id;
     renderInspector();
     return;
   }
+
+  if (connectionDraft.fromId !== el.id) {
+    addConnection(connectionDraft.type, connectionDraft.fromId, el.id);
+  }
+
+  clearConnectionPreview();
+  connectionDraft = null;
+  selectedElementId = null;
+  resetToolButtons();
+  currentTool = "select";
+  renderInspector();
+  return;
+}
+
 
   /* ---------------------------------------------
      5) TOOL: SELECT
@@ -1446,21 +1477,21 @@ svg.addEventListener("mousemove", (e) => {
   }
 
   /* DRAG ELEMENT */
-  if (dragState) {
-    const el = workspaceState.currentDiagram.elements.find(
-      (e) => e.id === dragState.id
-    );
-    if (!el) return;
-
-    const dx = x - dragState.startX;
-    const dy = y - dragState.startY;
-
-    el.x = dragState.origX + dx;
-    el.y = dragState.origY + dy;
-
-    renderElements();
-    renderConnections();
-    renderComments();
+/* DRAG ELEMENT */ 
+  if (dragState) { 
+    const el = workspaceState.currentDiagram.elements.find(e => e.id === dragState.id); 
+    if (!el) return; 
+    const dx = x - dragState.startX; 
+    const dy = y - dragState.startY; 
+    el.x = dragState.origX + dx; 
+    el.y = dragState.origY + dy; 
+    renderElements(); 
+    renderConnections(); 
+    renderComments(); 
+    return; 
+  } /* CONNECTION PREVIEW */ 
+  if (connectionDraft) { 
+    renderConnectionPreview(x, y); 
   }
 });
 
